@@ -1,0 +1,70 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NEXT_TELEMETRY_DISABLED: 1
+  DOCKER_IMAGE: projacktor/nextjs-app
+  DOCKER_TAG: ${{ github.sha }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Cache node modules
+      uses: actions/cache@v3
+      with:
+        path: |
+          node_modules
+          .next/cache
+        key: ${{ runner.os }}-nextjs-${{ hashFiles('package-lock.json') }}
+    
+    - name: Build Docker image
+      run: |
+        docker build -t $DOCKER_IMAGE:$DOCKER_TAG .
+        docker tag $DOCKER_IMAGE:$DOCKER_TAG $DOCKER_IMAGE:latest
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run tests in container
+      run: |
+        docker run -d --name test-container -p 3000:3000 $DOCKER_IMAGE:$DOCKER_TAG
+        sleep 10
+        if curl -s http://localhost:3000 | grep -q "Get started"; then
+          echo "Page OK"
+        else
+          echo "Page not reachable or content mismatch"
+          docker logs test-container
+          exit 1
+        fi
+        docker stop test-container
+        docker rm test-container
+
+  deploy:
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Login to Docker Hub
+      run: echo "${{ secrets.DOCKERHUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+    
+    - name: Push to Docker Hub
+      run: |
+        docker push $DOCKER_IMAGE:$DOCKER_TAG
+        docker push $DOCKER_IMAGE:latest
+      env:
+        DOCKER_IMAGE: ${{ env.DOCKER_IMAGE }}
+        DOCKER_TAG: ${{ env.DOCKER_TAG }}
